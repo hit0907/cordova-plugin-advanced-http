@@ -437,49 +437,60 @@ module.exports = function init(global, jsUtil, cookieHandler, messages, base64, 
 
     var textEncoder = new global.TextEncoder('utf8');
     var iterator = data.entries();
-
-    var result = {
-      buffers: [],
-      names: [],
-      fileNames: [],
-      types: []
-    };
-
-    processFormDataIterator(iterator, textEncoder, result, cb);
+    var promises = [];
+    while(true) {
+      var entry = iterator.next();
+      if (entry.done) {
+        break;
+      }
+      promises.push(formDataEntryTransformer(entry, textEncoder));
+    }
+    Promise.all(promises).then(function(values) {
+      var result = {
+        buffers: [],
+        names: [],
+        fileNames: [],
+        types: []
+      };
+      values.forEach(function(value) {
+        result.buffers.push(value.buffer);
+        result.names.push(value.name);
+        result.fileNames.push(value.fileName);
+        result.types.push(value.type);
+      });
+      cb(result);
+    });
   }
 
-  function processFormDataIterator(iterator, textEncoder, result, onFinished) {
-    var entry = iterator.next();
-
-    if (entry.done) {
-      return onFinished(result);
+  function formDataEntryTransformer(entry, textEncoder) {
+    if (global.advancedHttpFormDataEntryTransformer) {
+      var promise = global.advancedHttpFormDataEntryTransformer(entry);
+      if (promise) {
+        return promise;
+      }
     }
-
-    if (entry.value[1] instanceof global.Blob || entry.value[1] instanceof global.File) {
-      var reader = new global.FileReader();
-
-      reader.onload = function () {
-        result.buffers.push(base64.fromArrayBuffer(reader.result));
-        result.names.push(entry.value[0]);
-        result.fileNames.push(entry.value[1].name !== undefined ? entry.value[1].name : 'blob');
-        result.types.push(entry.value[1].type || '');
-        processFormDataIterator(iterator, textEncoder, result, onFinished);
-      };
-
-      return reader.readAsArrayBuffer(entry.value[1]);
-    }
-
-    if (jsUtil.getTypeOf(entry.value[1]) === 'String') {
-      result.buffers.push(base64.fromArrayBuffer(textEncoder.encode(entry.value[1]).buffer));
-      result.names.push(entry.value[0]);
-      result.fileNames.push(null);
-      result.types.push('text/plain');
-
-      return processFormDataIterator(iterator, textEncoder, result, onFinished)
-    }
-
-    // skip items which are not supported
-    processFormDataIterator(iterator, textEncoder, result, onFinished);
+    return new Promise(function(resolve) {
+      if (entry.value[1] instanceof global.Blob || entry.value[1] instanceof global.File) {
+        var reader = new global.FileReader();
+        reader.onload = function () {
+          return resolve({
+            buffer: base64.fromArrayBuffer(reader.result),
+            name: entry.value[0],
+            fileName: entry.value[1].name || 'blob',
+            type: entry.value[1].type || ''
+          });
+        };
+        return reader.readAsArrayBuffer(entry.value[1]);
+      }
+      if (jsUtil.getTypeOf(entry.value[1]) === 'String') {
+        return resolve({
+          buffer: base64.fromArrayBuffer(textEncoder.encode(entry.value[1]).buffer),
+          name: entry.value[0],
+          fileName: null,
+          type: 'text/plain'
+        });
+      }
+    });
   }
 
   function handleMissingCallbacks(successFn, failFn) {
